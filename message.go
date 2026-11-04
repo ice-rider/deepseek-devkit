@@ -1,16 +1,15 @@
 package devkit
 
 import (
-    "bufio"
-    "context"
-    "encoding/json"
-    "fmt"
-    "strings"
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
 )
 
 // NewMessage отправляет сообщение в чат.
-// Если stream == false, метод блокируется до полного ответа и возвращает NewMessageResult.
-// Если stream == true, возвращает канал, в который по мере поступления пишутся куски текста.
 func (c *Client) NewMessage(
 	ctx context.Context,
 	chatID, prompt string,
@@ -22,9 +21,24 @@ func (c *Client) NewMessage(
 		return nil, nil, err
 	}
 
+	// Гарантируем, что мы знаем последний message_id в этой сессии.
+	if c.getLastMsgID(chatID) == "" {
+		c.refreshLastMsgID(ctx, chatID)
+	}
+
+	var parentID interface{} // именно interface{}, чтобы отправить nil или int
+	if idStr := c.getLastMsgID(chatID); idStr != "" {
+		// DeepSeek ждет integer, конвертируем строку обратно в число
+		if idInt, err := strconv.Atoi(idStr); err == nil {
+			parentID = idInt
+		} else {
+			parentID = idStr // fallback
+		}
+	}
+
 	body := map[string]interface{}{
 		"chat_session_id":   chatID,
-		"parent_message_id": nil,
+		"parent_message_id": parentID, // <-- Теперь это число!
 		"model_type":        "default",
 		"prompt":            prompt,
 		"ref_file_ids":      []string{},
@@ -36,27 +50,29 @@ func (c *Client) NewMessage(
 		ch := make(chan string, 64)
 		go func() {
 			defer close(ch)
-			if err := c.streamCompletion(ctx, body, powHeader, ch); err != nil {
-				// ошибку можно передать через отдельный канал или лог
+			_ = c.streamCompletion(ctx, chatID, body, powHeader, ch)
+			// Fallback: если SSE не дал response_message_id — добираем из истории.
+			if c.getLastMsgID(chatID) == "" {
+				c.refreshLastMsgID(context.Background(), chatID)
 			}
 		}()
 		return nil, ch, nil
 	}
 
-	// Передаём prompt в syncCompletion.
-	res, err := c.syncCompletion(ctx, body, powHeader, prompt)
+	res, err := c.syncCompletion(ctx, chatID, body, powHeader, prompt)
 	if err != nil {
 		return nil, nil, err
 	}
 	return res, nil, nil
 }
 
-// syncCompletion собирает весь SSE-поток и возвращает готовые сообщения.
+// syncCompletion читает SSE и собирает полный ответ.
 func (c *Client) syncCompletion(
 	ctx context.Context,
+	chatID string,
 	body map[string]interface{},
 	powHeader string,
-	prompt string, // <-- добавлен параметр
+	prompt string,
 ) (*NewMessageResult, error) {
 
 	resp, err := c.hx.PostJSONStream(ctx, "/api/v0/chat/completion", body, powHeader)
@@ -66,73 +82,176 @@ func (c *Client) syncCompletion(
 	defer resp.Body.Close()
 
 	var assistant strings.Builder
-	var userMsg, assistMsg *Message
+	var userMsgID, assistMsgID string
 
-	// ... остальной код без изменений ...
-	// В конце:
-	userMsg = &Message{
-		Role:    "user",
-		Content: prompt, // теперь переменная определена
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+
+		var evt map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &evt); err != nil {
+			continue
+		}
+
+		if id, ok := evt["request_message_id"].(string); ok && id != "" {
+			userMsgID = id
+		}
+		
+		// event: ready приходит отдельным пакетом, но мы парсим все data:
+		if idFloat, ok := evt["response_message_id"].(float64); ok {
+			c.setLastMsgID(chatID, strconv.Itoa(int(idFloat)))
+		}
+
+		// Первый чанк ответа содержит вложенный объект response
+		if v, ok := evt["v"].(map[string]interface{}); ok {
+			if resp, ok := v["response"].(map[string]interface{}); ok {
+				if idFloat, ok := resp["message_id"].(float64); ok {
+					c.setLastMsgID(chatID, strconv.Itoa(int(idFloat)))
+				}
+			}
+		}
+
+		if txt, ok := extractContent(evt); ok {
+			assistant.WriteString(txt)
+		}
 	}
-	assistMsg = &Message{
-		Role:    "assistant",
-		Content: assistant.String(),
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	if assistMsgID != "" {
+		c.setLastMsgID(chatID, assistMsgID)
+	}
+
+	// Fallback: если SSE не дал response_message_id, берём из истории.
+	if c.getLastMsgID(chatID) == "" {
+		c.refreshLastMsgID(ctx, chatID)
 	}
 
 	return &NewMessageResult{
-		UserMessage:      userMsg,
-		AssistantMessage: assistMsg,
+		UserMessage:      &Message{ID: userMsgID, Role: "user", Content: prompt},
+		AssistantMessage: &Message{ID: assistMsgID, Role: "assistant", Content: assistant.String()},
 	}, nil
 }
 
 // streamCompletion читает SSE и отправляет текстовые дельты в канал.
 func (c *Client) streamCompletion(
-    ctx context.Context,
-    body map[string]interface{},
-    powHeader string,
-    out chan<- string,
+	ctx context.Context,
+	chatID string,
+	body map[string]interface{},
+	powHeader string,
+	out chan<- string,
 ) error {
 
-    resp, err := c.hx.PostJSONStream(ctx, "/api/v0/chat/completion", body, powHeader)
-    if err != nil {
-        return err
-    }
-    defer resp.Body.Close()
+	resp, err := c.hx.PostJSONStream(ctx, "/api/v0/chat/completion", body, powHeader)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
 
-    scanner := bufio.NewScanner(resp.Body)
-    for scanner.Scan() {
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        default:
-        }
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 
-        line := scanner.Text()
-        if !strings.HasPrefix(line, "data:") {
-            continue
-        }
-        data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-        if data == "" || data == "[DONE]" {
-            continue
-        }
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
 
-        var evt map[string]interface{}
-        if err := json.Unmarshal([]byte(data), &evt); err != nil {
-            continue
-        }
+		var evt map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &evt); err != nil {
+			continue
+		}
 
-        if delta, ok := evt["delta"].(map[string]interface{}); ok {
-            if content, ok := delta["content"].(string); ok && content != "" {
-                out <- content
-            }
-        }
-    }
-    return scanner.Err()
+		if id, ok := evt["response_message_id"].(string); ok && id != "" {
+			c.setLastMsgID(chatID, id)
+		}
+
+		if txt, ok := extractContent(evt); ok {
+			out <- txt
+		}
+	}
+	return scanner.Err()
 }
 
-// StopGeneration останавливает генерацию для указанной сессии.
+// extractContent достаёт текстовый кусок из события SSE.
+//
+// DeepSeek-веб присылает куски в поле "v". Поле "p" (path) говорит, к чему
+// относится "v". Контентом считаем:
+//   - p отсутствует/пуст        -> обычный чанк ответа
+//   - p заканчивается на /content -> явный чанк ответа
+// Пропускаем пути вида "response/thinking_content", "response/status" и т.п.
+func extractContent(evt map[string]interface{}) (string, bool) {
+	if p, ok := evt["p"].(string); ok && p != "" && !strings.HasSuffix(p, "/content") {
+		return "", false
+	}
+	v, ok := evt["v"].(string)
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
+}
+
+// StopGeneration останавливает генерацию ответа в указанной сессии.
+//
+// DeepSeek требует два идентификатора: chat_session_id и message_id,
+// причём message_id — это идентификатор ответа ассистента
+// (response_message_id из SSE), который ещё генерируется. Он хранится
+// в Client.lastMsgID и обновляется на каждом событии стрима/синка.
+//
+// Если в сессии ещё не было ответов — вернёт ошибку: останавливать нечего.
+// Метод не блокирует вызывающего: если нужно прервать текущий
+// syncCompletion/streamCompletion, вызывайте из отдельной горутины.
 func (c *Client) StopGeneration(ctx context.Context, chatID string) error {
-    // Эндпоинт требует message_id, но для простоты можно опустить или доработать.
-    // В реальном API: POST /api/v0/chat/stop_stream { chat_session_id, message_id }.
-    return fmt.Errorf("not implemented")
+	if chatID == "" {
+		return fmt.Errorf("devkit: chatID is empty")
+	}
+
+	msgID := c.getLastMsgID(chatID)
+	if msgID == "" {
+		return fmt.Errorf("devkit: no active message in chat %q", chatID)
+	}
+
+	body := map[string]string{
+		"chat_session_id": chatID,
+		"message_id":      msgID,
+	}
+
+	if err := c.hx.PostJSON(ctx, "/api/v0/chat/stop_stream", body, nil); err != nil {
+		return fmt.Errorf("stop generation: %w", err)
+	}
+	return nil
+}
+
+// refreshLastMsgID подтягивает последний assistant message_id из истории
+// и запоминает его как parent для следующего хода. Стоит один GET на вызов,
+// зато гарантирует, что диалог не «разорвётся» на ветки.
+func (c *Client) refreshLastMsgID(ctx context.Context, chatID string) {
+	msgs, err := c.GetChatById(ctx, chatID)
+	if err != nil {
+		return
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "assistant" && msgs[i].ID != "" {
+			c.setLastMsgID(chatID, msgs[i].ID)
+			return
+		}
+	}
 }

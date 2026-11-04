@@ -1,0 +1,659 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+internal/
+  httpx/
+    client.go
+.gitignore
+chat.go
+devkit.go
+go.mod
+interface.go
+LICENSE
+message.go
+pow_helper.go
+sse.go
+types.go
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="internal/httpx/client.go">
+package httpx
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"time"
+)
+
+type Client struct {
+	token   string
+	baseURL string
+	http    *http.Client
+}
+
+func New(token, baseURL string) *Client {
+	return &Client{
+		token:   token,
+		baseURL: baseURL,
+		http:    &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "deepseek-devkit/0.1")
+	// при необходимости добавьте x-client-* заголовки
+	return c.http.Do(req)
+}
+
+func (c *Client) GetJSON(ctx context.Context, path string, out interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("http %d: %s", resp.StatusCode, body)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *Client) GetJSONWithQuery(
+	ctx context.Context,
+	path string,
+	query map[string]string,
+	out interface{},
+) error {
+	u, err := url.Parse(c.baseURL + path)
+	if err != nil {
+		return err
+	}
+	q := u.Query()
+	for k, v := range query {
+		q.Set(k, v)
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("http %d: %s", resp.StatusCode, body)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *Client) PostJSON(
+	ctx context.Context,
+	path string,
+	body interface{},
+	out interface{},
+) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("http %d: %s", resp.StatusCode, raw)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+// PostJSONStream отправляет запрос с PoW-заголовком и возвращает потоковый ответ.
+func (c *Client) PostJSONStream(
+	ctx context.Context,
+	path string,
+	body interface{},
+	powHeader string,
+) (*http.Response, error) {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("x-ds-pow-response", powHeader)
+	// Таймаут для стриминга должен быть больше или отсутствовать;
+	// здесь используется клиент с общим таймаутом.
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, raw)
+	}
+	return resp, nil
+}
+</file>
+
+<file path=".gitignore">
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+#
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+!coverage.go
+*.coverprofile
+profile.cov
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# env file
+.env
+
+# Editor/IDE
+# .idea/
+# .vscode/
+</file>
+
+<file path="chat.go">
+package devkit
+
+import (
+    "context"
+    "fmt"
+)
+
+// NewChat создаёт новую чат-сессию.
+func (c *Client) NewChat(ctx context.Context) (*Session, error) {
+    var raw struct {
+        Data struct {
+            BizData struct {
+                ChatSession Session `json:"chat_session"`
+            } `json:"biz_data"`
+        } `json:"data"`
+    }
+
+    if err := c.hx.PostJSON(ctx, "/api/v0/chat_session/create", map[string]interface{}{}, &raw); err != nil {
+        return nil, fmt.Errorf("new chat: %w", err)
+    }
+    return &raw.Data.BizData.ChatSession, nil
+}
+
+// GetListOfChats возвращает список чатов (первую страницу).
+func (c *Client) GetListOfChats(ctx context.Context) ([]*Session, error) {
+    var raw struct {
+        Data struct {
+            BizData struct {
+                ChatSessions []*Session `json:"chat_sessions"`
+            } `json:"biz_data"`
+        } `json:"data"`
+    }
+
+    query := map[string]string{
+        "count": "50",
+        "mode":  "lte",
+    }
+    if err := c.hx.GetJSONWithQuery(ctx, "/api/v0/chat_session/fetch_page", query, &raw); err != nil {
+        return nil, fmt.Errorf("list chats: %w", err)
+    }
+    return raw.Data.BizData.ChatSessions, nil
+}
+
+// GetChatById возвращает историю сообщений указанной сессии.
+func (c *Client) GetChatById(ctx context.Context, chatID string) ([]*Message, error) {
+    var raw struct {
+        Data struct {
+            BizData struct {
+                ChatMessages []*Message `json:"chat_messages"`
+            } `json:"biz_data"`
+        } `json:"data"`
+    }
+
+    query := map[string]string{"chat_session_id": chatID}
+    if err := c.hx.GetJSONWithQuery(ctx, "/api/v0/chat/history_messages", query, &raw); err != nil {
+        return nil, fmt.Errorf("get chat: %w", err)
+    }
+    return raw.Data.BizData.ChatMessages, nil
+}
+
+// RenameChat переименовывает чат.
+func (c *Client) RenameChat(ctx context.Context, chatID, newTitle string) error {
+    body := map[string]string{
+        "chat_session_id": chatID,
+        "title":           newTitle,
+    }
+    return c.hx.PostJSON(ctx, "/api/v0/chat_session/update_title", body, nil)
+}
+
+// DeleteChat удаляет чат.
+func (c *Client) DeleteChat(ctx context.Context, chatID string) error {
+    body := map[string][]string{
+        "chat_session_ids": {chatID},
+    }
+    return c.hx.PostJSON(ctx, "/api/v0/chat_session/delete", body, nil)
+}
+</file>
+
+<file path="devkit.go">
+package devkit
+
+import (
+    "context"
+    "fmt"
+    "net/http"
+    "time"
+
+    "github.com/ice-rider/deepseek-devkit/internal/httpx"
+)
+
+const defaultBaseURL = "https://chat.deepseek.com"
+
+// Client — основной клиент для работы с DeepSeek.
+type Client struct {
+    token   string
+    baseURL string
+    http    *http.Client
+    hx      *httpx.Client
+}
+
+// NewClient создаёт клиент с указанным токеном.
+// Токен можно получить из localStorage (ключ "userToken") или передать вручную.
+func NewClient(token string) *Client {
+    return &Client{
+        token:   token,
+        baseURL: defaultBaseURL,
+        http:    &http.Client{Timeout: 60 * time.Second},
+    }
+}
+
+// Authorize проверяет токен и инициализирует внутренний HTTP-клиент.
+// Если токен пуст, возвращается ошибка.
+func (c *Client) Authorize(ctx context.Context) (*User, error) {
+    if c.token == "" {
+        return nil, fmt.Errorf("devkit: token is empty")
+    }
+    c.hx = httpx.New(c.token, c.baseURL)
+
+    var raw struct {
+        Data struct {
+            BizData struct {
+                User User `json:"user"`
+            } `json:"biz_data"`
+        } `json:"data"`
+    }
+
+    if err := c.hx.GetJSON(ctx, "/api/v0/users/current", &raw); err != nil {
+        return nil, fmt.Errorf("authorize: %w", err)
+    }
+    raw.Data.BizData.User.Token = c.token
+    return &raw.Data.BizData.User, nil
+}
+
+// GetCurrentUser — псевдоним для Authorize, возвращает информацию о пользователе.
+func (c *Client) GetCurrentUser(ctx context.Context) (*User, error) {
+    return c.Authorize(ctx)
+}
+</file>
+
+<file path="interface.go">
+package devkit
+
+import "context"
+
+type DeepSeek interface {
+    Authorize(ctx context.Context) (*User, error)
+    GetCurrentUser(ctx context.Context) (*User, error)
+    NewChat(ctx context.Context) (*Session, error)
+    GetListOfChats(ctx context.Context) ([]*Session, error)
+    GetChatById(ctx context.Context, chatID string) ([]*Message, error)
+    RenameChat(ctx context.Context, chatID, newTitle string) error
+    DeleteChat(ctx context.Context, chatID string) error
+    NewMessage(ctx context.Context, chatID, prompt string, stream bool) (*NewMessageResult, <-chan string, error)
+    StopGeneration(ctx context.Context, chatID string) error
+}
+
+var _ DeepSeek = (*Client)(nil)
+</file>
+
+<file path="LICENSE">
+MIT License
+
+Copyright (c) 2026 Anisimov Gleb
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</file>
+
+<file path="message.go">
+package devkit
+
+import (
+    "bufio"
+    "context"
+    "encoding/json"
+    "fmt"
+    "strings"
+)
+
+// NewMessage отправляет сообщение в чат.
+// Если stream == false, метод блокируется до полного ответа и возвращает NewMessageResult.
+// Если stream == true, возвращает канал, в который по мере поступления пишутся куски текста.
+func (c *Client) NewMessage(
+	ctx context.Context,
+	chatID, prompt string,
+	stream bool,
+) (*NewMessageResult, <-chan string, error) {
+
+	powHeader, err := c.preparePoW(ctx, "/api/v0/chat/completion")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	body := map[string]interface{}{
+		"chat_session_id":   chatID,
+		"parent_message_id": nil,
+		"model_type":        "default",
+		"prompt":            prompt,
+		"ref_file_ids":      []string{},
+		"thinking_enabled":  false,
+		"search_enabled":    false,
+	}
+
+	if stream {
+		ch := make(chan string, 64)
+		go func() {
+			defer close(ch)
+			if err := c.streamCompletion(ctx, body, powHeader, ch); err != nil {
+				// ошибку можно передать через отдельный канал или лог
+			}
+		}()
+		return nil, ch, nil
+	}
+
+	// Передаём prompt в syncCompletion.
+	res, err := c.syncCompletion(ctx, body, powHeader, prompt)
+	if err != nil {
+		return nil, nil, err
+	}
+	return res, nil, nil
+}
+
+// syncCompletion собирает весь SSE-поток и возвращает готовые сообщения.
+func (c *Client) syncCompletion(
+	ctx context.Context,
+	body map[string]interface{},
+	powHeader string,
+	prompt string, // <-- добавлен параметр
+) (*NewMessageResult, error) {
+
+	resp, err := c.hx.PostJSONStream(ctx, "/api/v0/chat/completion", body, powHeader)
+	if err != nil {
+		return nil, fmt.Errorf("completion: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var assistant strings.Builder
+	var userMsg, assistMsg *Message
+
+	// ... остальной код без изменений ...
+	// В конце:
+	userMsg = &Message{
+		Role:    "user",
+		Content: prompt, // теперь переменная определена
+	}
+	assistMsg = &Message{
+		Role:    "assistant",
+		Content: assistant.String(),
+	}
+
+	return &NewMessageResult{
+		UserMessage:      userMsg,
+		AssistantMessage: assistMsg,
+	}, nil
+}
+
+// streamCompletion читает SSE и отправляет текстовые дельты в канал.
+func (c *Client) streamCompletion(
+    ctx context.Context,
+    body map[string]interface{},
+    powHeader string,
+    out chan<- string,
+) error {
+
+    resp, err := c.hx.PostJSONStream(ctx, "/api/v0/chat/completion", body, powHeader)
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+
+    scanner := bufio.NewScanner(resp.Body)
+    for scanner.Scan() {
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        default:
+        }
+
+        line := scanner.Text()
+        if !strings.HasPrefix(line, "data:") {
+            continue
+        }
+        data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+        if data == "" || data == "[DONE]" {
+            continue
+        }
+
+        var evt map[string]interface{}
+        if err := json.Unmarshal([]byte(data), &evt); err != nil {
+            continue
+        }
+
+        if delta, ok := evt["delta"].(map[string]interface{}); ok {
+            if content, ok := delta["content"].(string); ok && content != "" {
+                out <- content
+            }
+        }
+    }
+    return scanner.Err()
+}
+
+// StopGeneration останавливает генерацию для указанной сессии.
+func (c *Client) StopGeneration(ctx context.Context, chatID string) error {
+    // Эндпоинт требует message_id, но для простоты можно опустить или доработать.
+    // В реальном API: POST /api/v0/chat/stop_stream { chat_session_id, message_id }.
+    return fmt.Errorf("not implemented")
+}
+</file>
+
+<file path="sse.go">
+package devkit
+
+// В этом файле можно оставить пусто: парсинг SSE уже встроен в message.go.
+// Если вы хотите вынести его в отдельный переиспользуемый пакет, создайте
+// функции ParseSSE(io.Reader, func(event map[string]interface{})) и используйте её.
+</file>
+
+<file path="types.go">
+package devkit
+
+// User — информация о текущем пользователе.
+type User struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Token string `json:"-"`
+}
+
+// Session — чат-сессия.
+type Session struct {
+	ID        string  `json:"id"`
+	Title     string  `json:"title"`
+	ModelType string  `json:"model_type"`
+	UpdatedAt float64 `json:"updated_at"`
+	Pinned    bool    `json:"pinned"`
+}
+
+// Message — сообщение в чате.
+type Message struct {
+	ID        string `json:"id"`
+	Role      string `json:"role"` // "user" или "assistant"
+	Content   string `json:"content"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// NewMessageResult — результат отправки сообщения в синхронном режиме.
+type NewMessageResult struct {
+	UserMessage      *Message
+	AssistantMessage *Message
+}
+</file>
+
+<file path="go.mod">
+module github.com/ice-rider/deepseek-devkit
+
+go 1.27.2
+
+require github.com/ice-rider/ds2api v0.0.0-20261104170657-7b4d4fa668bd
+</file>
+
+<file path="pow_helper.go">
+package devkit
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/ice-rider/ds2api/pow"
+)
+
+// powChallengeResponse — ответ эндпоинта /api/v0/chat/create_pow_challenge.
+type powChallengeResponse struct {
+	Data struct {
+		BizCode int `json:"biz_code"`
+		BizData struct {
+			Challenge pow.Challenge `json:"challenge"` // <-- вложенный объект
+		} `json:"biz_data"`
+	} `json:"data"`
+}
+
+// preparePoW получает челлендж для targetPath и возвращает готовый заголовок
+// x-ds-pow-response.
+func (c *Client) preparePoW(ctx context.Context, targetPath string) (string, error) {
+	body := map[string]string{"target_path": targetPath}
+
+	var ch powChallengeResponse
+	if err := c.hx.PostJSON(ctx, "/api/v0/chat/create_pow_challenge", body, &ch); err != nil {
+		return "", fmt.Errorf("pow challenge: %w", err)
+	}
+	if ch.Data.BizCode != 0 {
+		return "", fmt.Errorf("pow challenge: biz_code=%d", ch.Data.BizCode)
+	}
+
+	// Теперь передаём контекст и указатель на Challenge — как требует ds2api/pow.
+	header, err := pow.SolveAndBuildHeader(ctx, &ch.Data.BizData.Challenge)
+	if err != nil {
+		return "", fmt.Errorf("pow solve: %w", err)
+	}
+	return header, nil
+}
+</file>
+
+</files>
