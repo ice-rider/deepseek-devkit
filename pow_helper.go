@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"ds2api/pow"
+	"github.com/ice-rider/ds2api/pow"
 )
 
 // powChallengeResponse — ответ эндпоинта /api/v0/chat/create_pow_challenge.
