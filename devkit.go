@@ -5,28 +5,45 @@ import (
     "fmt"
     "net/http"
     "time"
+    "sync"
 
     "github.com/ice-rider/deepseek-devkit/internal/httpx"
 )
 
 const defaultBaseURL = "https://chat.deepseek.com"
 
-// Client — основной клиент для работы с DeepSeek.
+// devkit.go
 type Client struct {
-    token   string
-    baseURL string
-    http    *http.Client
-    hx      *httpx.Client
+	token     string
+	baseURL   string
+	http      *http.Client
+	hx        *httpx.Client
+	lastMsgID map[string]string
+	msgMu     sync.Mutex
 }
 
-// NewClient создаёт клиент с указанным токеном.
-// Токен можно получить из localStorage (ключ "userToken") или передать вручную.
 func NewClient(token string) *Client {
-    return &Client{
-        token:   token,
-        baseURL: defaultBaseURL,
-        http:    &http.Client{Timeout: 60 * time.Second},
-    }
+	return &Client{
+		token:     token,
+		baseURL:   defaultBaseURL,
+		http:      &http.Client{Timeout: 60 * time.Second},
+		lastMsgID: make(map[string]string),
+	}
+}
+
+func (c *Client) getLastMsgID(chatID string) string {
+	c.msgMu.Lock()
+	defer c.msgMu.Unlock()
+	return c.lastMsgID[chatID]
+}
+
+func (c *Client) setLastMsgID(chatID, id string) {
+	if id == "" {
+		return
+	}
+	c.msgMu.Lock()
+	defer c.msgMu.Unlock()
+	c.lastMsgID[chatID] = id
 }
 
 // Authorize проверяет токен и инициализирует внутренний HTTP-клиент.
