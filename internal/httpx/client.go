@@ -1,0 +1,142 @@
+package httpx
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"time"
+)
+
+type Client struct {
+	token   string
+	baseURL string
+	http    *http.Client
+}
+
+func New(token, baseURL string) *Client {
+	return &Client{
+		token:   token,
+		baseURL: baseURL,
+		http:    &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "deepseek-devkit/0.1")
+	// при необходимости добавьте x-client-* заголовки
+	return c.http.Do(req)
+}
+
+func (c *Client) GetJSON(ctx context.Context, path string, out interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("http %d: %s", resp.StatusCode, body)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *Client) GetJSONWithQuery(
+	ctx context.Context,
+	path string,
+	query map[string]string,
+	out interface{},
+) error {
+	u, err := url.Parse(c.baseURL + path)
+	if err != nil {
+		return err
+	}
+	q := u.Query()
+	for k, v := range query {
+		q.Set(k, v)
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("http %d: %s", resp.StatusCode, body)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *Client) PostJSON(
+	ctx context.Context,
+	path string,
+	body interface{},
+	out interface{},
+) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("http %d: %s", resp.StatusCode, raw)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+// PostJSONStream отправляет запрос с PoW-заголовком и возвращает потоковый ответ.
+func (c *Client) PostJSONStream(
+	ctx context.Context,
+	path string,
+	body interface{},
+	powHeader string,
+) (*http.Response, error) {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("x-ds-pow-response", powHeader)
+	// Таймаут для стриминга должен быть больше или отсутствовать;
+	// здесь используется клиент с общим таймаутом.
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, raw)
+	}
+	return resp, nil
+}
