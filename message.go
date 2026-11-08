@@ -75,7 +75,7 @@ func (c *Client) syncCompletion(
 	prompt string,
 ) (*NewMessageResult, error) {
 
-	resp, err := c.hx.PostJSONStream(ctx, "/api/v0/chat/completion", body, powHeader)
+	resp, err := c.httpClient().PostJSONStream(ctx, "/api/v0/chat/completion", body, powHeader)
 	if err != nil {
 		return nil, fmt.Errorf("completion: %w", err)
 	}
@@ -151,7 +151,7 @@ func (c *Client) streamCompletion(
 	out chan<- string,
 ) error {
 
-	resp, err := c.hx.PostJSONStream(ctx, "/api/v0/chat/completion", body, powHeader)
+	resp, err := c.httpClient().PostJSONStream(ctx, "/api/v0/chat/completion", body, powHeader)
 	if err != nil {
 		return err
 	}
@@ -234,7 +234,7 @@ func (c *Client) StopGeneration(ctx context.Context, chatID string) error {
 		"message_id":      msgID,
 	}
 
-	if err := c.hx.PostJSON(ctx, "/api/v0/chat/stop_stream", body, nil); err != nil {
+	if err := c.httpClient().PostJSON(ctx, "/api/v0/chat/stop_stream", body, nil); err != nil {
 		return fmt.Errorf("stop generation: %w", err)
 	}
 	return nil

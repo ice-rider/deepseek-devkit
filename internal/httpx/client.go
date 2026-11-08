@@ -6,32 +6,65 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
-	"time"
 )
 
 type Client struct {
-	token   string
-	baseURL string
-	http    *http.Client
+	token     string
+	baseURL   string
+	http      *http.Client
+	transport *Transport
 }
 
 func New(token, baseURL string) *Client {
+	return NewWithConfig(token, baseURL, Config{})
+}
+
+func NewWithConfig(token, baseURL string, cfg Config) *Client {
+	return NewWithLogger(token, baseURL, cfg, nil)
+}
+
+func NewWithLogger(token, baseURL string, cfg Config, logger *log.Logger) *Client {
+	cfg = cfg.withDefaults()
+	t := NewTransport(nil, cfg, logger)
 	return &Client{
-		token:   token,
-		baseURL: baseURL,
-		http:    &http.Client{Timeout: 60 * time.Second},
+		token:     token,
+		baseURL:   baseURL,
+		transport: t,
+		http: &http.Client{
+			Transport: t,
+			Timeout:   cfg.Timeout,
+		},
 	}
 }
+
+// SetNetworkLogging toggles the logging/retry layer at runtime.
+func (c *Client) SetNetworkLogging(enabled bool) {
+	cfg := c.transport.Config()
+	cfg.Enabled = enabled
+	c.transport.SetConfig(cfg)
+}
+
+// SetConfig replaces the network configuration at runtime.
+// Note: Timeout changes require a new Client.
+func (c *Client) SetConfig(cfg Config) {
+	c.transport.SetConfig(cfg)
+}
+
+func (c *Client) Config() Config { return c.transport.Config() }
 
 func (c *Client) do(req *http.Request) (*http.Response, error) {
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "deepseek-devkit/0.1")
-	// при необходимости добавьте x-client-* заголовки
 	return c.http.Do(req)
 }
+
+// GetJSON, GetJSONWithQuery, PostJSON, PostJSONStream — unchanged bodies,
+// they keep calling c.do(req) as before.
+// (Copy them verbatim from the current file.)
 
 func (c *Client) GetJSON(ctx context.Context, path string, out interface{}) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
@@ -117,7 +150,7 @@ func (c *Client) PostJSONStream(
 	path string,
 	body interface{},
 	powHeader string,
-) (*http.Response, error) {
+) (*http.Response, error) {	
 	b, err := json.Marshal(body)
 	if err != nil {
 		return nil, err

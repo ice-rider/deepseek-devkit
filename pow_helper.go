@@ -23,7 +23,7 @@ func (c *Client) preparePoW(ctx context.Context, targetPath string) (string, err
 	body := map[string]string{"target_path": targetPath}
 
 	var ch powChallengeResponse
-	if err := c.hx.PostJSON(ctx, "/api/v0/chat/create_pow_challenge", body, &ch); err != nil {
+	if err := c.httpClient().PostJSON(ctx, "/api/v0/chat/create_pow_challenge", body, &ch); err != nil {
 		return "", fmt.Errorf("pow challenge: %w", err)
 	}
 	if ch.Data.BizCode != 0 {

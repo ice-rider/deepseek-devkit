@@ -15,7 +15,7 @@ func (c *Client) NewChat(ctx context.Context) (*Session, error) {
         } `json:"data"`
     }
 
-    if err := c.hx.PostJSON(ctx, "/api/v0/chat_session/create", map[string]interface{}{}, &raw); err != nil {
+    if err := c.httpClient().PostJSON(ctx, "/api/v0/chat_session/create", map[string]interface{}{}, &raw); err != nil {
         return nil, fmt.Errorf("new chat: %w", err)
     }
     return &raw.Data.BizData.ChatSession, nil
@@ -35,7 +35,7 @@ func (c *Client) GetListOfChats(ctx context.Context) ([]*Session, error) {
         "count": "50",
         "mode":  "lte",
     }
-    if err := c.hx.GetJSONWithQuery(ctx, "/api/v0/chat_session/fetch_page", query, &raw); err != nil {
+    if err := c.httpClient().GetJSONWithQuery(ctx, "/api/v0/chat_session/fetch_page", query, &raw); err != nil {
         return nil, fmt.Errorf("list chats: %w", err)
     }
     return raw.Data.BizData.ChatSessions, nil
@@ -52,7 +52,7 @@ func (c *Client) GetChatById(ctx context.Context, chatID string) ([]*Message, er
     }
 
     query := map[string]string{"chat_session_id": chatID}
-    if err := c.hx.GetJSONWithQuery(ctx, "/api/v0/chat/history_messages", query, &raw); err != nil {
+    if err := c.httpClient().GetJSONWithQuery(ctx, "/api/v0/chat/history_messages", query, &raw); err != nil {
         return nil, fmt.Errorf("get chat: %w", err)
     }
     return raw.Data.BizData.ChatMessages, nil
@@ -64,7 +64,7 @@ func (c *Client) RenameChat(ctx context.Context, chatID, newTitle string) error 
         "chat_session_id": chatID,
         "title":           newTitle,
     }
-    return c.hx.PostJSON(ctx, "/api/v0/chat_session/update_title", body, nil)
+    return c.httpClient().PostJSON(ctx, "/api/v0/chat_session/update_title", body, nil)
 }
 
 // DeleteChat удаляет чат.
@@ -72,5 +72,5 @@ func (c *Client) DeleteChat(ctx context.Context, chatID string) error {
     body := map[string][]string{
         "chat_session_ids": {chatID},
     }
-    return c.hx.PostJSON(ctx, "/api/v0/chat_session/delete", body, nil)
+    return c.httpClient().PostJSON(ctx, "/api/v0/chat_session/delete", body, nil)
 }
